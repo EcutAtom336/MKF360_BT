@@ -24,13 +24,13 @@
 #include "portmacro.h"
 #include "soc/gpio_num.h"
 
-#define IIS_DMA_DESC_NUM (3U)
-#define IIS_DMA_FRAME_NUM (960U) // 20ms 一次中断
-
 #define MKF360_AUDIO_SAMPLE_RATE_HZ (48000U)
 #define MKF360_AUDIO_SAMPLE_NUM_1MS (MKF360_AUDIO_SAMPLE_RATE_HZ / 1000U)
-#define MKF360_AUDIO_PERIPH_DMA_MS_PER_DEST (20U)
 #define MKF360_AUDIO_SAMPLE_SIZE (2U)
+
+#define IIS_DMA_DESC_NUM (2U)
+#define IIS_DMA_ISR_INTERVAL_MS (40U)                                                 // 40ms 一次中断
+#define IIS_DMA_FRAME_NUM (IIS_DMA_ISR_INTERVAL_MS * MKF360_AUDIO_SAMPLE_NUM_1MS / 2) // 双声道传输单声道数据
 
 #define IIS_WRITER_MSG_A2D_SINK_AUDIO_STARTED (0U)
 #define IIS_WRITER_MSG_A2D_SINK_AUDIO_SUSPEND (1U)
@@ -80,10 +80,10 @@ static void iis_writer()
     uint8_t *a2d_sink_resampler_in_buffer = NULL;
     uint8_t *a2d_sink_resampler_out_buffer = NULL;
     const uint32_t a2d_sink_resampler_in_size =
-        441 * 2 * 2 * 4; // (samples per 10ms) * (channel number) * (sample size) * (n)
+        441 * 1 * 2 * 4; // (samples per 10ms) * (channel number) * (sample size) * (n)
     resample_info_t a2d_sink_resampler_info = {
         .src_rate = 44100,
-        .src_ch = 2,
+        .src_ch = 1,
         .dest_rate = 48000,
         .dest_bits = 16,
         .dest_ch = 1,
@@ -246,7 +246,8 @@ static void iis_writer()
             ret_esp = i2s_channel_write(tx_chan, hfp_in_resampler_out_buffer, sz, NULL, 40);
             if (ret_esp != ESP_OK)
             {
-                ESP_LOGW(TAG, "iis write error, reason: %s, reset iis tx channel.", esp_err_to_name(ret_esp));
+                ESP_LOGE(TAG, "iis write %d bytes error, reason: %s, reset iis tx channel.", sz,
+                         esp_err_to_name(ret_esp));
                 ESP_ERROR_CHECK(i2s_channel_disable(tx_chan));
                 ESP_ERROR_CHECK(i2s_channel_enable(tx_chan));
             }
@@ -272,7 +273,8 @@ static void iis_writer()
             ret_esp = i2s_channel_write(tx_chan, a2d_sink_resampler_out_buffer, sz, NULL, 40);
             if (ret_esp != ESP_OK)
             {
-                ESP_LOGW(TAG, "iis write error, reason: %s, reset iis tx channel.", esp_err_to_name(ret_esp));
+                ESP_LOGE(TAG, "iis write %d bytes error, reason: %s, reset iis tx channel.", sz,
+                         esp_err_to_name(ret_esp));
                 ESP_ERROR_CHECK(i2s_channel_disable(tx_chan));
                 ESP_ERROR_CHECK(i2s_channel_enable(tx_chan));
             }
@@ -400,7 +402,7 @@ static void sw_init()
 {
     // (samples per 10ms) * (channel number) * (sample size) * (n)
 
-    a2d_sink_hf_in_stream = xStreamBufferCreate(480 * 2 * 2 * 20, 1);
+    a2d_sink_hf_in_stream = xStreamBufferCreate(480 * 1 * 2 * 20, 1);
     ESP_ERROR_CHECK(a2d_sink_hf_in_stream == NULL ? ESP_FAIL : ESP_OK);
 
     hf_out_stream = xStreamBufferCreate(160 * 1 * 2 * 20, 1);
@@ -548,7 +550,7 @@ static void gpio_init()
 static void iis_init()
 {
     i2s_chan_config_t chan_cfg = {
-        .id = I2S_NUM_0,
+        .id = I2S_NUM_AUTO,
         .role = I2S_ROLE_SLAVE,
         .dma_desc_num = IIS_DMA_DESC_NUM,
         .dma_frame_num = IIS_DMA_FRAME_NUM,
@@ -578,6 +580,7 @@ static void iis_init()
                     },
             },
     };
+    std_cfg.clk_cfg.clk_src = I2S_CLK_SRC_APLL;
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(tx_chan, &std_cfg));
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(rx_chan, &std_cfg));
 }
@@ -642,13 +645,17 @@ static void a2d_sink_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *p_param)
 static void a2d_sink_data_cb(const uint8_t *data, uint32_t len)
 {
     const char *TAG = "A2D SINK CB";
-    if (xStreamBufferSpacesAvailable(a2d_sink_hf_in_stream) < len)
+    if (xStreamBufferSpacesAvailable(a2d_sink_hf_in_stream) < len / 2)
     {
         ESP_LOGW(TAG, "a2d_sink_hf_in_stream space not enough, drop data.");
         return;
     }
-    uint32_t sent_size = xStreamBufferSend(a2d_sink_hf_in_stream, data, len, 0);
-    ESP_ERROR_CHECK(sent_size == len ? ESP_OK : ESP_FAIL);
+    for (size_t i = 0; i < len / sizeof(int16_t); i++)
+    {
+        ((int16_t *)data)[i] = ((int16_t *)data)[i * 2];
+    }
+    uint32_t sent_size = xStreamBufferSend(a2d_sink_hf_in_stream, data, len / 2, 0);
+    ESP_ERROR_CHECK(sent_size == len / 2 ? ESP_OK : ESP_FAIL);
 }
 
 static void hf_client_cb(esp_hf_client_cb_event_t event, esp_hf_client_cb_param_t *param)
