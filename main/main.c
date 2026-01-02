@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/errno.h>
 
 #include "driver/gpio.h"
@@ -16,6 +17,7 @@
 #include "esp_gap_bt_api.h"
 #include "esp_hf_client_api.h"
 #include "esp_log.h"
+#include "esp_mac.h"
 #include "esp_resample.h"
 #include "esp_system.h"
 #include "freertos/idf_additions.h"
@@ -421,6 +423,12 @@ static void sw_init()
 
 static void bt_init()
 {
+    // Generate a bluetooth device name(maybe repeat)
+    uint8_t factory_mac[6] = {0};
+    ESP_ERROR_CHECK(esp_read_mac(&factory_mac[0], ESP_MAC_EFUSE_FACTORY));
+    char device_name[] = "MKF360-XXXXXX";
+    snprintf(device_name, sizeof(device_name), "MKF360-%02X%02X%02X", factory_mac[3], factory_mac[4], factory_mac[5]);
+
     // Base
     ESP_ERROR_CHECK(esp_bt_controller_mem_release(ESP_BT_MODE_BLE));
     esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
@@ -428,7 +436,7 @@ static void bt_init()
     ESP_ERROR_CHECK(esp_bt_controller_enable(ESP_BT_MODE_CLASSIC_BT));
     ESP_ERROR_CHECK(esp_bluedroid_init());
     ESP_ERROR_CHECK(esp_bluedroid_enable());
-    ESP_ERROR_CHECK(esp_bt_gap_set_device_name("MKF360"));
+    ESP_ERROR_CHECK(esp_bt_gap_set_device_name(device_name));
 
     // GAP
     esp_bt_pin_type_t pin_type = ESP_BT_PIN_TYPE_VARIABLE;
